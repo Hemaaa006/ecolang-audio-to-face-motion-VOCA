@@ -188,18 +188,14 @@ def run(audio_file, smplx_zip):
 
 demo = gr.Interface(
     fn=run,
-    inputs=[
-        gr.Audio(type="filepath", label="Upload audio"),
-        gr.File(label="(Optional) Upload your SMPL-X model zip (smplx/SMPLX_NEUTRAL.npz etc.)", file_types=[".zip"])
-    ],
+    inputs=gr.Audio(type="filepath", label="Upload speech audio (≤15s)"),
     outputs=[
         gr.File(label="Download predicted motion (motion_pred.npz)"),
-        gr.Image(label="Motion preview plot"),
+        gr.Image(label="motion preview"),
         gr.Textbox(label="Info"),
-        gr.Textbox(label="Status"),
     ],
-    title="ECOLANG Audio → Face Motion (SMPL-X jaw+expression)",
-    description="This demo predicts a full motion sequence (not single frame): jaw pose + expression over time. It outputs a motion npz compatible with your ECOLANG format. SMPL-X files are not redistributed; users may upload their own zip if needed for local rendering."
+    title="ECOLANG Audio → Face Motion ",
+    description="Predicts a full motion sequence and outputs SMPL-X-style npz. Rendering requires SMPL-X models and is done locally."
 )
 
 if __name__ == "__main__":
