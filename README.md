@@ -1,18 +1,18 @@
 # ECOLANG Audio-Driven Face Motion Generation
 
-This repository contains the code for an **audio-driven 3D facial motion generation system** trained on the ECOLANG dataset.  
-The model predicts **temporal SMPL-X facial parameters (jaw pose and expressions)** directly from speech audio.
+- This repository contains the code for an **audio-driven 3D facial motion generation system** trained on the ECOLANG dataset.  
+- The model predicts **temporal SMPL-X facial parameters (jaw pose and expressions)** directly from speech audio.
 
 ---
 
 ## 📁 Repository Structure
 notebooks/
-01_train_audio2face.ipynb # model training
-02_inference_and_render.ipynb # motion prediction + SMPL-X rendering
+- 01_train_audio2face.ipynb # model training
+- 02_inference_and_render.ipynb # motion prediction + SMPL-X rendering
 
 hf_space/
-app.py # Hugging Face Space app
-requirements.txt
+- app.py # Hugging Face Space app
+- requirements.txt
 
 ---
 
