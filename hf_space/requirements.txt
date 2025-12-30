@@ -1,0 +1,6 @@
+torch
+transformers
+soundfile
+numpy
+gradio>=4.0
+matplotlib
