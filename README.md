@@ -1,7 +1,7 @@
 # ECOLANG Audio-Driven Face Motion Generation
 
 - This repository contains the code for an **audio-driven 3D facial motion generation system** trained on the ECOLANG dataset.  
-- The model predicts **temporal SMPL-X facial parameters directly from speech audio.
+- The model predicts temporal SMPL-X facial parameters directly from speech audio.
 
 ---
 
