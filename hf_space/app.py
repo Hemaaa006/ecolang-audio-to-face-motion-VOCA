@@ -1,6 +1,4 @@
-
 import os
-import zipfile
 import tempfile
 import numpy as np
 import gradio as gr
@@ -8,11 +6,12 @@ import soundfile as sf
 import torch
 import torch.nn as nn
 from transformers import Wav2Vec2Model
-import matplotlib.pyplot as plt
 
 # ---------------- constants ----------------
 FPS = 30
 SR = 16000
+
+MAX_AUDIO_SEC = 30.0  # UI limit
 WIN_SEC = 4.0
 WIN_FRAMES = int(FPS * WIN_SEC)
 WIN_SAMPLES = int(SR * WIN_SEC)
@@ -48,20 +47,23 @@ class Audio2Face(nn.Module):
         feat = self.w2v.config.hidden_size
         self.proj = nn.Linear(feat, hidden)
         self.lstm = nn.LSTM(hidden, hidden, num_layers=layers, batch_first=True, bidirectional=True)
-        self.head = nn.Sequential(nn.LayerNorm(hidden*2), nn.Linear(hidden*2, out_dim))
+        self.head = nn.Sequential(nn.LayerNorm(hidden * 2), nn.Linear(hidden * 2, out_dim))
 
     def forward(self, x):
-        h = self.w2v(x).last_hidden_state
-        h = self.proj(h)
-        h = h.transpose(1,2)
-        h = torch.nn.functional.interpolate(h, size=WIN_FRAMES, mode="linear", align_corners=False)
-        h = h.transpose(1,2)
-        h, _ = self.lstm(h)
-        return self.head(h)
+        h = self.w2v(x).last_hidden_state                  # (B, T_w2v, feat)
+        h = self.proj(h)                                   # (B, T_w2v, hidden)
+        h = h.transpose(1, 2)                               # (B, hidden, T_w2v)
+        h = torch.nn.functional.interpolate(
+            h, size=WIN_FRAMES, mode="linear", align_corners=False
+        )                                                   # (B, hidden, WIN_FRAMES)
+        h = h.transpose(1, 2)                               # (B, WIN_FRAMES, hidden)
+        h, _ = self.lstm(h)                                 # (B, WIN_FRAMES, hidden*2)
+        return self.head(h)                                 # (B, WIN_FRAMES, OUT_DIM)
 
 def load_checkpoint(path="best_face.pt"):
     model = Audio2Face().to(DEVICE).eval()
     ckpt = torch.load(path, map_location="cpu")
+    # expects: {"model": state_dict}
     model.load_state_dict(ckpt["model"], strict=True)
     return model
 
@@ -75,23 +77,22 @@ def predict_full_sequence(wav_np):
     returns:
       jaw_seq: (T,3)
       expr_seq: (T,10)
-      fps: 30
     """
     N = len(wav_np)
     if N == 0:
-        return np.zeros((0,3), np.float32), np.zeros((0,EXPR_DIM), np.float32)
+        return np.zeros((0, 3), np.float32), np.zeros((0, EXPR_DIM), np.float32)
 
     # pad to full windows
     num_windows = int(np.ceil(N / WIN_SAMPLES))
-    padded = np.pad(wav_np, (0, num_windows*WIN_SAMPLES - N), mode="constant")
+    padded = np.pad(wav_np, (0, num_windows * WIN_SAMPLES - N), mode="constant")
 
     jaw_all = []
     expr_all = []
 
     for w in range(num_windows):
-        seg = padded[w*WIN_SAMPLES:(w+1)*WIN_SAMPLES]
-        x = torch.from_numpy(seg).unsqueeze(0).to(DEVICE)  # (1, WIN_SAMPLES)
-        yhat = MODEL(x)[0].detach().cpu().numpy()          # (WIN_FRAMES,13)
+        seg = padded[w * WIN_SAMPLES : (w + 1) * WIN_SAMPLES]
+        x = torch.from_numpy(seg).unsqueeze(0).to(DEVICE)   # (1, WIN_SAMPLES)
+        yhat = MODEL(x)[0].detach().cpu().numpy()           # (WIN_FRAMES, 13)
         jaw_all.append(yhat[:, :3])
         expr_all.append(yhat[:, 3:])
 
@@ -99,7 +100,6 @@ def predict_full_sequence(wav_np):
     expr = np.concatenate(expr_all, axis=0)
 
     # trim frames to actual audio length
-    # expected frames = floor(seconds*FPS)
     seconds = N / SR
     T = int(np.floor(seconds * FPS))
     if T <= 0:
@@ -122,81 +122,63 @@ def build_motion_npz(jaw, expr, fps=30):
     poses[:, JAW_INDEX, :] = jaw
 
     betas = np.zeros((10,), dtype=np.float32)
-    transl = np.zeros((T,3), dtype=np.float32)
+    transl = np.zeros((T, 3), dtype=np.float32)
 
     return {
         "poses": poses,
         "expressions": expr.astype(np.float32),
         "betas": betas,
         "transl": transl,
-        "fps": np.int32(fps)
+        "fps": np.int32(fps),
     }
 
-def plot_preview(jaw, expr, out_png):
-    # simple visualization of motion over time
-    t = np.arange(jaw.shape[0]) / FPS
-    plt.figure()
-    plt.plot(t, jaw[:,0])
-    plt.plot(t, jaw[:,1])
-    plt.plot(t, jaw[:,2])
-    plt.xlabel("time (s)")
-    plt.ylabel("jaw axis-angle")
-    plt.title("Predicted jaw motion")
-    plt.tight_layout()
-    plt.savefig(out_png)
-    plt.close()
-
-# ---------------- SMPL-X zip check (optional) ----------------
-def verify_smplx_zip(zip_path):
-    """
-    Users upload their own SMPL-X zip. We just verify it contains expected structure.
-    Expect: smplx/SMPLX_NEUTRAL.npz (or similar)
-    """
-    with zipfile.ZipFile(zip_path, "r") as z:
-        names = z.namelist()
-    has_smplx_folder = any(n.startswith("smplx/") for n in names)
-    has_neutral = any("SMPLX_NEUTRAL" in n and n.startswith("smplx/") for n in names)
-    return has_smplx_folder and has_neutral, names[:50]
-
-# ---------------- gradio fn ----------------
-def run(audio_file, smplx_zip):
+# ---------------- gradio fn (NO graph, NO smplx upload) ----------------
+def run(audio_file):
     if audio_file is None:
-        return None, None, None, "Upload an audio file."
-
-    # optional zip validation (for licensing-friendly demo)
-    zip_msg = ""
-    if smplx_zip is not None:
-        ok, sample_names = verify_smplx_zip(smplx_zip)
-        if not ok:
-            return None, None, None, "SMPL-X zip doesn't look right. It must contain smplx/SMPLX_NEUTRAL.npz (and friends)."
-        zip_msg = "SMPL-X zip looks valid (not used for rendering in this demo)."
+        return None, "Please upload an audio file."
 
     wav = load_audio_mono(audio_file)
-    jaw, expr = predict_full_sequence(wav)
 
+    # hard cap to MAX_AUDIO_SEC
+    max_samples = int(MAX_AUDIO_SEC * SR)
+    if len(wav) > max_samples:
+        wav = wav[:max_samples]
+
+    jaw, expr = predict_full_sequence(wav)
     motion = build_motion_npz(jaw, expr, fps=FPS)
 
     tmpdir = tempfile.mkdtemp()
     npz_path = os.path.join(tmpdir, "motion_pred.npz")
     np.savez(npz_path, **motion)
 
-    png_path = os.path.join(tmpdir, "jaw_plot.png")
-    plot_preview(jaw, expr, png_path)
+    info = f"Generated {jaw.shape[0]} frames @ {FPS} fps (~{jaw.shape[0] / FPS:.2f}s)."
+    return npz_path, info
 
-    info = f"Generated {jaw.shape[0]} frames @ {FPS} fps (~{jaw.shape[0]/FPS:.2f}s). {zip_msg}"
-    return npz_path, png_path, info, info
+# ---------------- UI (Blocks) ----------------
+with gr.Blocks(title="ECOLANG Audio → Face Motion") as demo:
+    gr.Markdown(
+        """
+# ECOLANG Audio → Face Motion
+Upload speech audio . Outputs an **SMPL-X-style** `.npz`.
+        """.strip()
+    )
 
-demo = gr.Interface(
-    fn=run,
-    inputs=gr.Audio(type="filepath", label="Upload speech audio (≤15s)"),
-    outputs=[
-        gr.File(label="Download predicted motion (motion_pred.npz)"),
-        gr.Image(label="motion preview"),
-        gr.Textbox(label="Info"),
-    ],
-    title="ECOLANG Audio → Face Motion ",
-    description="Predicts a full motion sequence and outputs SMPL-X-style npz. Rendering requires SMPL-X models and is done locally."
-)
+    audio_in = gr.Audio(type="filepath", label="Upload speech audio")
+    btn = gr.Button("Generate")
+
+    out_npz = gr.File(label="Download predicted motion (motion_pred.npz)")
+    out_info = gr.Textbox(label="Info")
+
+    btn.click(
+        fn=run,
+        inputs=[audio_in],
+        outputs=[out_npz, out_info],
+        concurrency_limit=1,
+        api_name=False,   # avoids API schema edge cases
+    )
+
+demo.queue(max_size=1)
 
 if __name__ == "__main__":
-    demo.launch()
+    # Spaces-safe: bind to 0.0.0.0:7860
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
